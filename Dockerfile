@@ -13,17 +13,15 @@ RUN npm install -g pnpm@11
 
 # คัดลอกเฉพาะไฟล์ Dependency สำหรับ cache layer
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml* ./
-COPY prisma.config.ts ./
-COPY prisma ./prisma/
 
 # ติดตั้ง Dependencies ทั้งหมด
 RUN pnpm install --frozen-lockfile
 
-# Generate Prisma Client
-RUN pnpm prisma generate
-
-# คัดลอกซอร์สโค้ดและคอนฟิกทั้งหมด
+# คัดลอกซอร์สโค้ดและไฟล์คอนฟิกทั้งหมด (รวม tsconfig.json, prisma.config.ts, schema)
 COPY . .
+
+# Generate Prisma Client (อ่าน tsconfig.json ทำให้สร้าง import .js ถูกต้อง)
+RUN pnpm prisma generate
 
 # Build NestJS โปรเจกต์
 RUN pnpm build
