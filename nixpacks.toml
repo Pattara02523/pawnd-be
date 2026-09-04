@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ['nodejs_22', 'pnpm', 'openssl']
+
+[phases.install]
+cmds = ['pnpm install --frozen-lockfile']
+
+[phases.build]
+cmds = ['pnpm prisma generate', 'pnpm build']
+
+[start]
+cmd = 'pnpm deploy:prod'
