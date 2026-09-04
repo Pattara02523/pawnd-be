@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -40,6 +41,8 @@ const PASSWORD_RESET_TTL_MINUTES = 15;
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly bcryptService: BcryptService,
@@ -89,11 +92,16 @@ export class AuthService {
       return { user, otp };
     });
 
-    await this.mailService.send({
-      to: user.email,
-      subject: 'Verify your Pawnd account',
-      text: `Your verification code: ${otp}`,
-    });
+    // ส่งอีเมลแบบ Asynchronous เพื่อให้หน้าบ้านได้รับ Response และเปลี่ยนไปหน้า OTP ทันทีโดยไม่ติด Timeout
+    void this.mailService
+      .send({
+        to: user.email,
+        subject: 'Verify your Pawnd account',
+        text: `Your verification code: ${otp}`,
+      })
+      .catch((err) => {
+        this.logger.warn(`Could not deliver email to ${user.email}: ${err}`);
+      });
 
     return user;
   }
@@ -462,11 +470,15 @@ export class AuthService {
       });
       const resetLink = `${frontendUrl.replace(/\/$/, '')}/reset-password?token=${token}`;
 
-      await this.mailService.send({
-        to: user.email,
-        subject: 'Reset your Pawnd password',
-        text: `Click the link to reset your password: ${resetLink}`,
-      });
+      void this.mailService
+        .send({
+          to: user.email,
+          subject: 'Reset your Pawnd password',
+          text: `Click the link to reset your password: ${resetLink}`,
+        })
+        .catch((err) => {
+          this.logger.warn(`Could not deliver reset email to ${user.email}: ${err}`);
+        });
     }
 
     return { message: 'Password reset link sent to email' };
@@ -585,11 +597,15 @@ export class AuthService {
       },
     });
 
-    await this.mailService.send({
-      to: email,
-      subject: 'Verify your Pawnd account',
-      text: `Your verification code: ${otp}`,
-    });
+    void this.mailService
+      .send({
+        to: email,
+        subject: 'Verify your Pawnd account',
+        text: `Your verification code: ${otp}`,
+      })
+      .catch((err) => {
+        this.logger.warn(`Could not deliver resend email to ${email}: ${err}`);
+      });
   }
 
   async verifyTwoFactor(dto: VerifyTwoFactorDto) {
@@ -679,11 +695,15 @@ export class AuthService {
       },
     });
 
-    await this.mailService.send({
-      to: user.email,
-      subject: 'Your Pawnd login code',
-      text: `Your login verification code: ${otp}`,
-    });
+    void this.mailService
+      .send({
+        to: user.email,
+        subject: 'Your Pawnd login code',
+        text: `Your login verification code: ${otp}`,
+      })
+      .catch((err) => {
+        this.logger.warn(`Could not deliver 2FA email: ${err}`);
+      });
 
     return { message: 'Verification code resent' };
   }
@@ -708,11 +728,15 @@ export class AuthService {
       },
     });
 
-    await this.mailService.send({
-      to: email,
-      subject: 'Your Pawnd login code',
-      text: `Your login verification code: ${otp}`,
-    });
+    void this.mailService
+      .send({
+        to: email,
+        subject: 'Your Pawnd login code',
+        text: `Your login verification code: ${otp}`,
+      })
+      .catch((err) => {
+        this.logger.warn(`Could not deliver 2FA email: ${err}`);
+      });
 
     return tempToken;
   }

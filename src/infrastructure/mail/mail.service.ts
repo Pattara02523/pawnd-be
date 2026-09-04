@@ -24,6 +24,10 @@ export class MailService {
         user,
         pass: configService.get('GMAIL_SMTP_APP_PASSWORD', { infer: true }),
       },
+      // จำกัดเวลาเชื่อมต่อไม่ให้ค้างนานเกินไป
+      connectionTimeout: 4000,
+      greetingTimeout: 4000,
+      socketTimeout: 4000,
     });
   }
 
