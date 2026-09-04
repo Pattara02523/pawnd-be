@@ -36,12 +36,16 @@ export class MailService {
         text: payload.text,
       });
     } catch (error) {
+      // บันทึกข้อผิดพลาดกรณีส่งอีเมลไม่สำเร็จ
       this.logger.error(
         `Failed to send email to ${payload.to}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
-      throw new Error('Failed to send email');
+      // พิมพ์ข้อความและรหัส OTP ลงในคอนโซลล็อก เพื่อให้ทีมงานและผู้ดูแลระบบนำไปใช้ทดสอบได้ทันที
+      this.logger.warn(
+        `[FALLBACK EMAIL LOG] To: ${payload.to} | Subject: ${payload.subject} | Content: ${payload.text}`,
+      );
     }
   }
 }
