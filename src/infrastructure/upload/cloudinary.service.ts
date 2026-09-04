@@ -15,14 +15,18 @@ export class CloudinaryService {
   constructor(
     private readonly configService: ConfigService<EnvVariableType, true>,
   ) {
+    const sanitize = (val?: string) => val?.trim().replace(/^["']|["']$/g, '');
+
     cloudinary.config({
-      cloud_name: this.configService.get('CLOUDINARY_CLOUD_NAME', {
-        infer: true,
-      }),
-      api_key: this.configService.get('CLOUDINARY_API_KEY', { infer: true }),
-      api_secret: this.configService.get('CLOUDINARY_API_SECRET', {
-        infer: true,
-      }),
+      cloud_name: sanitize(
+        this.configService.get('CLOUDINARY_CLOUD_NAME', { infer: true }),
+      ),
+      api_key: sanitize(
+        this.configService.get('CLOUDINARY_API_KEY', { infer: true }),
+      ),
+      api_secret: sanitize(
+        this.configService.get('CLOUDINARY_API_SECRET', { infer: true }),
+      ),
     });
   }
   upload(file: Express.Multer.File): Promise<string> {
