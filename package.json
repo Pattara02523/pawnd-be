@@ -116,5 +116,14 @@
     },
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/engines",
+      "bcrypt",
+      "esbuild",
+      "prisma",
+      "unrs-resolver"
+    ]
   }
 }
