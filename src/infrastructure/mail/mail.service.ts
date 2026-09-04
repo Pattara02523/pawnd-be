@@ -19,16 +19,20 @@ export class MailService {
     const user = configService.get('GMAIL_SMTP_USER', { infer: true });
     this.fromEmail = user;
     this.transporter = nodemailer.createTransport({
-      service: 'gmail',
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
       auth: {
         user,
         pass: configService.get('GMAIL_SMTP_APP_PASSWORD', { infer: true }),
       },
+      // บังคับใช้ IPv4 เพราะ Container บน Railway/Cloud มักไม่รองรับ Outbound IPv6 ทำให้เชื่อมต่อค้าง
+      family: 4,
       // จำกัดเวลาเชื่อมต่อไม่ให้ค้างนานเกินไป
-      connectionTimeout: 4000,
-      greetingTimeout: 4000,
-      socketTimeout: 4000,
-    });
+      connectionTimeout: 5000,
+      greetingTimeout: 5000,
+      socketTimeout: 5000,
+    } as nodemailer.TransportOptions);
   }
 
   async send(payload: MailPayload): Promise<void> {
