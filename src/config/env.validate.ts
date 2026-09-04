@@ -44,9 +44,9 @@ const envSchema = z.object({
   AI_ANALYZE_IMAGE_MODEL_FREE: z.string().min(1),
   AI_IMAGE_EMBEDDING_MODEL: z.string().min(1),
   AI_IMAGE_EMBEDDING_DIMENSION: z.coerce.number().int().positive(),
-  AI_PET_AVATAR_MODEL: z.string().min(1),
-  GMAIL_SMTP_USER: z.string().min(1),
-  GMAIL_SMTP_APP_PASSWORD: z.string().min(1),
+  GMAIL_SMTP_USER: z.string().optional().default(''),
+  GMAIL_SMTP_APP_PASSWORD: z.string().optional().default(''),
+  RESEND_API_KEY: z.string().optional(),
 });
 
 type ParsedEnvironment = z.infer<typeof envSchema>;
