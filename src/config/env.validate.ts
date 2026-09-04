@@ -47,6 +47,8 @@ const envSchema = z.object({
   GMAIL_SMTP_USER: z.string().optional().default(''),
   GMAIL_SMTP_APP_PASSWORD: z.string().optional().default(''),
   RESEND_API_KEY: z.string().optional(),
+  BREVO_API_KEY: z.string().optional(),
+  BREVO_SENDER_EMAIL: z.string().optional(),
 });
 
 type ParsedEnvironment = z.infer<typeof envSchema>;

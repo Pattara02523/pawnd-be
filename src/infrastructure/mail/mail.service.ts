@@ -15,12 +15,19 @@ export class MailService {
   private readonly transporter: Transporter | null = null;
   private readonly fromEmail: string;
   private readonly resendApiKey?: string;
+  private readonly brevoApiKey?: string;
+  private readonly brevoSenderEmail: string;
 
   constructor(configService: ConfigService<EnvVariableType, true>) {
+    this.brevoApiKey = configService.get('BREVO_API_KEY', { infer: true });
     this.resendApiKey = configService.get('RESEND_API_KEY', { infer: true });
     const user = configService.get('GMAIL_SMTP_USER', { infer: true }) || '';
     const pass = configService.get('GMAIL_SMTP_APP_PASSWORD', { infer: true }) || '';
     this.fromEmail = user || 'onboarding@resend.dev';
+    this.brevoSenderEmail =
+      configService.get('BREVO_SENDER_EMAIL', { infer: true }) ||
+      user ||
+      'pawnd.noreply@gmail.com';
 
     if (user && pass) {
       this.transporter = nodemailer.createTransport({
@@ -42,7 +49,41 @@ export class MailService {
   }
 
   async send(payload: MailPayload): Promise<void> {
-    // 1. ถ้ามี RESEND_API_KEY ให้ส่งผ่าน Resend HTTPS REST API (Port 443) ซึ่งทำงานบน Railway ได้ 100% ไม่ติดบล็อกพอร์ต
+    // 1. ถ้ามี BREVO_API_KEY ให้ส่งผ่าน Brevo HTTPS REST API (Port 443) ซึ่งส่งหาคนทั่วไปได้ทุกคนโดยไม่ต้องมีโดเมน
+    if (this.brevoApiKey) {
+      try {
+        const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+          method: 'POST',
+          headers: {
+            'api-key': this.brevoApiKey,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            sender: { name: 'PAWND', email: this.brevoSenderEmail },
+            to: [{ email: payload.to }],
+            subject: payload.subject,
+            textContent: payload.text,
+          }),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.text();
+          throw new Error(`Brevo API error: ${response.status} ${errorData}`);
+        }
+
+        this.logger.log(`Email successfully sent to ${payload.to} via Brevo API`);
+        return;
+      } catch (error) {
+        this.logger.error(
+          `Failed to send email via Brevo to ${payload.to}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    // 2. ถ้ามี RESEND_API_KEY ให้ส่งผ่าน Resend HTTPS REST API (Port 443)
     if (this.resendApiKey) {
       try {
         const response = await fetch('https://api.resend.com/emails', {
