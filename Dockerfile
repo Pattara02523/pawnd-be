@@ -1,17 +1,15 @@
 # -------------------------------------------------------------
 # Stage 1: Build & Dependencies
 # -------------------------------------------------------------
-FROM node:20-bookworm-slim AS builder
+FROM node:22-bookworm-slim AS builder
 
 WORKDIR /app
 
-# ติดตั้ง OpenSSL สำหรับ Prisma Engine
+# ติดตั้ง OpenSSL สำหรับ Prisma Engine และ build tools
 RUN apt-get update -y && apt-get install -y openssl python3 make g++ && rm -rf /var/lib/apt/lists/*
 
-# เปิดใช้งาน pnpm
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable
+# ติดตั้ง pnpm โดยตรง
+RUN npm install -g pnpm@11
 
 # คัดลอกเฉพาะไฟล์ Dependency สำหรับ cache layer
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml* ./
@@ -33,7 +31,7 @@ RUN pnpm build
 # -------------------------------------------------------------
 # Stage 2: Production Runner
 # -------------------------------------------------------------
-FROM node:20-bookworm-slim AS runner
+FROM node:22-bookworm-slim AS runner
 
 WORKDIR /app
 
@@ -43,9 +41,8 @@ ENV PORT=8000
 # ติดตั้ง OpenSSL สำหรับ Prisma
 RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable
+# ติดตั้ง pnpm สำหรับรัน migration script
+RUN npm install -g pnpm@11
 
 # คัดลอก node_modules, generated prisma client และ dist จาก builder stage
 COPY --from=builder /app/package.json ./package.json
