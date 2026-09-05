@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -24,7 +25,11 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { VerifyTwoFactorDto } from './dto/verify-2fa.dto';
 import { ResendTwoFactorDto } from './dto/resend-2fa.dto';
-import { UserRole, UserStatus } from '@/database/generated/prisma/enums';
+import {
+  AuthProvider,
+  UserRole,
+  UserStatus,
+} from '@/database/generated/prisma/enums';
 import { GoogleAuthService } from '@/infrastructure/google/google-auth.service';
 import { GoogleLoginDto } from './dto/google-login.dto';
 import { LineAuthService } from '@/infrastructure/line/line-auth.service';
@@ -36,7 +41,6 @@ import { EnvVariableType } from '@/config/env.validate';
 const EMAIL_VERIFICATION_TTL_MINUTES = 5;
 const MAX_OTP_ATTEMPTS = 3;
 const TWO_FACTOR_TTL_MINUTES = 5;
-const LINE_PENDING_TTL_MINUTES = 15;
 const PASSWORD_RESET_TTL_MINUTES = 15;
 
 @Injectable()
@@ -137,19 +141,22 @@ export class AuthService {
     return this.completeLogin(user);
   }
 
-  private async completeLogin(user: {
-    id: string;
-    email: string;
-    role: UserRole;
-    firstName: string;
-    lastName: string;
-    status: UserStatus;
-    avatarUrl: string | null;
-    lastLoginAt: Date | null;
-    twoFactorEnabled: boolean;
-  }) {
+  private async completeLogin(
+    user: {
+      id: string;
+      email: string;
+      role: UserRole;
+      firstName: string;
+      lastName: string;
+      status: UserStatus;
+      avatarUrl: string | null;
+      lastLoginAt: Date | null;
+      twoFactorEnabled: boolean;
+    },
+    socialVerified = false,
+  ) {
     const requiresTwoFactor =
-      user.lastLoginAt === null || user.twoFactorEnabled;
+      !socialVerified && (user.lastLoginAt === null || user.twoFactorEnabled);
 
     if (requiresTwoFactor) {
       const tempToken = await this.issueTwoFactorChallenge(user.id, user.email);
@@ -188,63 +195,97 @@ export class AuthService {
     };
   }
 
+  /** Google ตรวจ token และอีเมลจาก provider ก่อนเปิด session โดยไม่ส่ง OTP */
   async loginWithGoogle(dto: GoogleLoginDto) {
     const payload = await this.googleAuthService.verifyIdToken(dto.idToken);
+    if (!payload.email || payload.email_verified !== true) {
+      throw new UnauthorizedException('Google email is not verified');
+    }
+    return this.completeSocialLogin({
+      provider: AuthProvider.GOOGLE,
+      subject: payload.sub,
+      email: payload.email,
+      firstName: payload.given_name ?? 'Google',
+      lastName: payload.family_name ?? 'User',
+      avatarUrl: payload.picture,
+    });
+  }
 
-    const email = payload.email as string;
-    const googleId = payload.sub;
-
-    let user = await this.prisma.user.findUnique({ where: { email } });
-
-    if (!user) {
-      user = await this.prisma.user.create({
+  /** ใช้ provider subject เป็นตัวตนหลัก ไม่ผูกบัญชีจากอีเมลที่ตรงกันโดยอัตโนมัติ */
+  private async completeSocialLogin(profile: {
+    provider: 'GOOGLE' | 'LINE';
+    subject: string;
+    email?: string;
+    firstName: string;
+    lastName: string;
+    avatarUrl?: string;
+  }) {
+    const user = await this.prisma.$transaction(async (tx) => {
+      const account = await tx.authAccount.findUnique({
+        where: {
+          provider_providerAccountId: {
+            provider: profile.provider,
+            providerAccountId: profile.subject,
+          },
+        },
+        include: { user: true },
+      });
+      if (account) {
+        if (account.user.status === UserStatus.ACTIVE) return account.user;
+        // อนุญาตบัญชี social เก่าที่ค้างยืนยันเฉพาะเมื่อ provider ยืนยันอีเมลเดิมและไม่มีรหัสผ่าน local
+        if (
+          account.user.status !== UserStatus.PENDING_EMAIL_VERIFICATION ||
+          account.user.passwordHash ||
+          !profile.email ||
+          account.user.email !== profile.email
+        ) {
+          throw new UnauthorizedException(
+            'บัญชีนี้ยังไม่สามารถเข้าสู่ระบบได้ กรุณาใช้ช่องทางเดิมหรือติดต่อผู้ดูแล',
+          );
+        }
+        await tx.emailVerification.deleteMany({
+          where: { userId: account.user.id },
+        });
+        return tx.user.update({
+          where: { id: account.user.id },
+          data: { status: UserStatus.ACTIVE, emailVerifiedAt: new Date() },
+        });
+      }
+      if (!profile.email) {
+        throw new BadRequestException(
+          'กรุณาอนุญาตให้ LINE แชร์อีเมล แล้วลองเข้าสู่ระบบอีกครั้ง',
+        );
+      }
+      const existing = await tx.user.findUnique({
+        where: { email: profile.email },
+      });
+      if (existing) {
+        throw new ConflictException(
+          'ไม่สามารถสมัครด้วยช่องทางนี้ได้ กรุณาเข้าสู่ระบบด้วยช่องทางที่เคยใช้',
+        );
+      }
+      // สร้าง user และบัญชี provider ใน transaction เดียว โดยอีเมลมาจาก token ที่ตรวจแล้วเท่านั้น
+      return tx.user.create({
         data: {
-          firstName: payload.given_name ?? 'Google',
-          lastName: payload.family_name ?? 'User',
-          email,
-          avatarUrl: payload.picture,
+          email: profile.email,
+          firstName: profile.firstName,
+          lastName: profile.lastName,
+          avatarUrl: profile.avatarUrl,
+          status: UserStatus.ACTIVE,
+          emailVerifiedAt: new Date(),
+          ...(profile.provider === AuthProvider.LINE
+            ? { lineId: profile.subject }
+            : {}),
           authAccounts: {
             create: {
-              provider: 'GOOGLE',
-              providerAccountId: googleId,
+              provider: profile.provider,
+              providerAccountId: profile.subject,
             },
           },
         },
       });
-
-      await this.sendVerificationEmail(user.id, user.email);
-
-      return {
-        email: user.email,
-        message: 'Registration successful, please verify your email',
-      };
-    }
-
-    const linkedAccount = await this.prisma.authAccount.findFirst({
-      where: { userId: user.id, provider: 'GOOGLE' },
     });
-
-    if (!linkedAccount) {
-      await this.prisma.authAccount.create({
-        data: {
-          userId: user.id,
-          provider: 'GOOGLE',
-          providerAccountId: googleId,
-        },
-      });
-    }
-
-    if (user.status === 'PENDING_EMAIL_VERIFICATION') {
-      throw new UnauthorizedException(
-        'Please verify your email before logging in',
-      );
-    }
-
-    if (user.status !== 'ACTIVE') {
-      throw new UnauthorizedException('Account is not active');
-    }
-
-    return this.completeLogin(user);
+    return this.completeLogin(user, true);
   }
 
   async loginWithLine(dto: LineLoginDto) {
@@ -253,144 +294,23 @@ export class AuthService {
       dto.redirectUri,
     );
 
-    const existingAccount = await this.prisma.authAccount.findFirst({
-      where: { provider: 'LINE', providerAccountId: profile.sub },
+    // บัญชีที่ผูกไว้ใช้ subject เดิมได้ ส่วนบัญชีใหม่ต้องมีอีเมลจาก LINE เท่านั้น
+    return this.completeSocialLogin({
+      provider: AuthProvider.LINE,
+      subject: profile.sub,
+      email: profile.email,
+      firstName: profile.name ?? 'LINE',
+      lastName: 'User',
+      avatarUrl: profile.picture,
     });
-
-    if (existingAccount) {
-      const user = await this.prisma.user.findUnique({
-        where: { id: existingAccount.userId },
-      });
-
-      if (!user) {
-        throw new UnauthorizedException('Account is not active');
-      }
-
-      if (user.status === 'PENDING_EMAIL_VERIFICATION') {
-        throw new UnauthorizedException(
-          'Please verify your email before logging in',
-        );
-      }
-
-      if (user.status !== 'ACTIVE') {
-        throw new UnauthorizedException('Account is not active');
-      }
-
-      return this.completeLogin(user);
-    }
-
-    if (profile.email) {
-      const user = await this.prisma.user.create({
-        data: {
-          firstName: profile.name ?? 'LINE',
-          lastName: 'User',
-          email: profile.email,
-          avatarUrl: profile.picture,
-          lineId: profile.sub,
-          authAccounts: {
-            create: {
-              provider: 'LINE',
-              providerAccountId: profile.sub,
-            },
-          },
-        },
-      });
-
-      await this.sendVerificationEmail(user.id, user.email);
-
-      return { message: 'Registration successful, please verify your email' };
-    }
-
-    const tempToken = await this.issueLinePendingLink(profile);
-
-    return {
-      tempToken,
-      type: 'LINE_EMAIL_REQUIRED' as const,
-      message: 'Please provide your email to continue',
-    };
   }
 
-  private async issueLinePendingLink(profile: {
-    sub: string;
-    name?: string;
-    picture?: string;
-  }): Promise<string> {
-    const tempToken = generateToken();
-
-    await this.prisma.linePendingLink.create({
-      data: {
-        tempTokenHash: hashToken(tempToken),
-        providerAccountId: profile.sub,
-        firstName: profile.name,
-        avatarUrl: profile.picture,
-        expiresAt: new Date(Date.now() + LINE_PENDING_TTL_MINUTES * 60 * 1000),
-      },
-    });
-
-    return tempToken;
-  }
-
-  async completeLineRegistration(dto: CompleteLineDto) {
-    const pending = await this.prisma.linePendingLink.findFirst({
-      where: {
-        tempTokenHash: hashToken(dto.tempToken),
-        expiresAt: { gt: new Date() },
-      },
-    });
-
-    if (!pending) {
-      throw new BadRequestException('Invalid or expired request');
-    }
-
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: dto.email },
-    });
-
-    if (existingUser) {
-      await this.prisma.authAccount.create({
-        data: {
-          userId: existingUser.id,
-          provider: 'LINE',
-          providerAccountId: pending.providerAccountId,
-        },
-      });
-
-      await this.prisma.linePendingLink.delete({ where: { id: pending.id } });
-
-      if (existingUser.status === 'PENDING_EMAIL_VERIFICATION') {
-        throw new UnauthorizedException(
-          'Please verify your email before logging in',
-        );
-      }
-
-      if (existingUser.status !== 'ACTIVE') {
-        throw new UnauthorizedException('Account is not active');
-      }
-
-      return this.completeLogin(existingUser);
-    }
-
-    const user = await this.prisma.user.create({
-      data: {
-        firstName: pending.firstName ?? 'LINE',
-        lastName: 'User',
-        email: dto.email,
-        avatarUrl: pending.avatarUrl,
-        lineId: pending.providerAccountId,
-        authAccounts: {
-          create: {
-            provider: 'LINE',
-            providerAccountId: pending.providerAccountId,
-          },
-        },
-      },
-    });
-
-    await this.prisma.linePendingLink.delete({ where: { id: pending.id } });
-
-    await this.sendVerificationEmail(user.id, user.email);
-
-    return { message: 'Registration successful, please verify your email' };
+  /** ปิด endpoint เก่าที่รับอีเมลกรอกเอง ไม่ให้ข้ามการยืนยันจาก LINE */
+  completeLineRegistration(dto: CompleteLineDto): never {
+    void dto;
+    throw new BadRequestException(
+      'กรุณาอนุญาตให้ LINE แชร์อีเมล แล้วเริ่มเข้าสู่ระบบด้วย LINE อีกครั้ง',
+    );
   }
 
   async getMe(userId: string) {
@@ -477,7 +397,9 @@ export class AuthService {
           text: `Click the link to reset your password: ${resetLink}`,
         })
         .catch((err) => {
-          this.logger.warn(`Could not deliver reset email to ${user.email}: ${err}`);
+          this.logger.warn(
+            `Could not deliver reset email to ${user.email}: ${err}`,
+          );
         });
     }
 

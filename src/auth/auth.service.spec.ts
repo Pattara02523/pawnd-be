@@ -1,3 +1,4 @@
+import { ConfigService } from '@nestjs/config';
 import { UserRole, UserStatus } from '@/database/generated/prisma/enums';
 import { PrismaService } from '@/database/prisma.service';
 import { BcryptService } from '@/infrastructure/hash/bcrypt.service';
@@ -78,6 +79,8 @@ describe('AuthService token renewal', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
+        // Mock config ที่ AuthService ใช้ เพื่อให้ทดสอบเส้นทางรหัสผ่านเดิมได้
+        { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: PrismaService, useValue: prisma },
         { provide: BcryptService, useValue: bcryptService },
         { provide: MailService, useValue: mailService },
