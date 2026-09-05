@@ -60,6 +60,11 @@ export class AiMatchingService {
       throw new BadRequestException('Only active posts can be matched');
     }
 
+    // เมื่อผู้ใช้กดจับคู่ใหม่ ให้สร้าง embedding ที่ขาดของประกาศนี้ก่อน (เช่น provider เคยล่ม)
+    for (const image of sourcePost.images) {
+      await this.embeddingService.createImageEmbedding(image.id);
+    }
+
     // 3. LOST ต้องหา FOUND / FOUND ต้องหา LOST
     const oppositeType =
       sourcePost.type === PostType.LOST ? PostType.FOUND : PostType.LOST;

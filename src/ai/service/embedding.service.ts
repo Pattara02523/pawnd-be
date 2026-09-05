@@ -1,3 +1,4 @@
+import { assertFreeAiModel, FREE_AI_PROVIDER } from '../free-ai-policy';
 import { OpenRouterEmbeddingResponse } from '@/ai/types/openrouter-embedding.type';
 import { createMockImageEmbedding } from '@/ai/mock-ai.data';
 import { Prisma } from '@/database/generated/prisma/client';
@@ -41,7 +42,7 @@ export class EmbeddingService {
       SELECT "id"
       FROM "image_embeddings"
       WHERE "post_image_id" = ${postImageId}::uuid
-        AND "model_name" = ${model}
+        AND "model_name" = ${this.storageModel(model)}
       LIMIT 1
     `;
 
@@ -68,14 +69,14 @@ export class EmbeddingService {
       return createMockImageEmbedding(imageUrl, dimension);
     }
 
-    const baseUrl = this.configService.getOrThrow<string>(
-      'OPENROUTER_BASE_URL',
-    );
+    assertFreeAiModel(model);
+    const baseUrl = 'https://openrouter.ai/api/v1';
 
     const apiKey = this.configService.getOrThrow<string>('OPENROUTER_API_KEY');
 
     const response = await fetch(`${baseUrl}/embeddings`, {
       method: 'POST',
+      signal: AbortSignal.timeout(30000),
 
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -84,6 +85,7 @@ export class EmbeddingService {
 
       body: JSON.stringify({
         model,
+        provider: FREE_AI_PROVIDER,
 
         input: [
           {
@@ -104,16 +106,22 @@ export class EmbeddingService {
     });
 
     if (!response.ok) {
-      const error = await response.text();
-
-      throw new BadRequestException(`Embedding generation failed: ${error}`);
+      throw new BadRequestException(
+        'AI เปรียบเทียบรูปยังไม่พร้อมใช้งาน กรุณาลองใหม่ภายหลัง',
+      );
     }
 
     const result = (await response.json()) as OpenRouterEmbeddingResponse;
 
     const embedding = result.data[0]?.embedding;
 
-    if (!embedding?.length) {
+    if (
+      !Array.isArray(embedding) ||
+      !embedding.length ||
+      embedding.some(
+        (value) => typeof value !== 'number' || !Number.isFinite(value),
+      )
+    ) {
       throw new BadRequestException('Embedding model returned empty vector');
     }
 
@@ -165,10 +173,10 @@ export class EmbeddingService {
             ${candidatePostId}::uuid
 
         AND source_embedding."model_name" =
-            ${model}
+            ${this.storageModel(model)}
 
         AND candidate_embedding."model_name" =
-            ${model}
+            ${this.storageModel(model)}
     `;
 
     return this.clamp(rows[0]?.similarity ?? 0);
@@ -231,7 +239,7 @@ export class EmbeddingService {
       INNER JOIN "pet_posts" pet_posts
         ON pet_posts."id" = post_images."post_id"
 
-      WHERE image_embeddings."model_name" = ${model}
+      WHERE image_embeddings."model_name" = ${this.storageModel(model)}
         AND pet_posts."status" = ${PostStatus.ACTIVE}::"post_status"
         ${postTypeFilter}
         ${petTypeFilter}
@@ -245,6 +253,15 @@ export class EmbeddingService {
       postId: row.postId,
       vectorSimilarity: this.clamp(row.similarity ?? 0),
     }));
+  }
+
+  /** แยก vector จริงกับ mock และข้อมูลเก่าที่ระบุโหมดไม่ได้ โดยไม่ลบข้อมูลเดิม */
+  private storageModel(model: string): string {
+    return [
+      this.isMockMode() ? 'mock-v2' : 'live-v2',
+      model,
+      this.configService.get<number>('AI_IMAGE_EMBEDDING_DIMENSION') ?? 768,
+    ].join(':');
   }
 
   private getEmbeddingModel(): string {
@@ -275,7 +292,7 @@ export class EmbeddingService {
         gen_random_uuid(),
         ${postImageId}::uuid,
         ${vector}::vector,
-        ${model},
+        ${this.storageModel(model)},
         ${embedding.length},
         NOW()
       )

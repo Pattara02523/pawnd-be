@@ -11,7 +11,9 @@ export class OpenRouterProvider {
 
     if (!mockMode) {
       this.client = new OpenAI({
-        baseURL: this.configService.getOrThrow<string>('OPENROUTER_BASE_URL'),
+        baseURL: 'https://openrouter.ai/api/v1',
+        timeout: 30000,
+        maxRetries: 0, // จำกัดเวลาและจำนวนคำขอในโควตาฟรี
         apiKey: this.configService.getOrThrow<string>('OPENROUTER_API_KEY'),
         defaultHeaders: {
           'X-OpenRouter-Title': 'PAWND',

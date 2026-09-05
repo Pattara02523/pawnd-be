@@ -20,7 +20,14 @@ export class PetAvatarService {
     private readonly cloudinaryService: CloudinaryService,
   ) {}
 
+  /** โหมดฟรียังไม่มีโมเดล Avatar ที่ยืนยันได้ จึงหยุดก่อนเรียก provider หรือหักโควตา */
   async generatePetAvatar(dto: GeneratePetAvatarDto, currentUserId?: string) {
+    if (!this.isMockMode()) {
+      throw new HttpException(
+        'การสร้าง Avatar ยังไม่เปิดให้ใช้งานในโหมด AI ฟรี',
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
     // =========================================================
     // 1. FIND PET
     // =========================================================
@@ -392,11 +399,14 @@ The final result should clearly look like the same pet shown across all referenc
 
   private isMockMode(): boolean {
     const raw = this.configService.get<boolean | string>('AI_MOCK_MODE');
-    if (raw === false || raw === 'false' || process.env.AI_MOCK_MODE === 'false') return false;
-    if (raw === true || raw === 'true' || process.env.AI_MOCK_MODE === 'true') return true;
+    if (
+      raw === false ||
+      raw === 'false' ||
+      process.env.AI_MOCK_MODE === 'false'
+    )
+      return false;
+    if (raw === true || raw === 'true' || process.env.AI_MOCK_MODE === 'true')
+      return true;
     return false;
   }
 }
-
-
-

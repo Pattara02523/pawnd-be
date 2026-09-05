@@ -1,10 +1,13 @@
+import { z } from 'zod';
+import { PetType } from '@/database/generated/prisma/enums';
+import { assertFreeAiModel, FREE_AI_PROVIDER } from './free-ai-policy';
 import { OpenRouterProvider } from '@/ai/providers/openrouter.provider';
 import { MOCK_AI_ANALYSIS_RESULT } from '@/ai/mock-ai.data';
 import { AiLogService } from '@/ai/service/ai-log.service';
 import { AiAnalysisResult } from '@/ai/types/ai-analysis-result.type';
 import { OpenRouterChatCompletion } from '@/ai/types/openrouter.type';
 import { ai_feature } from '@/database/generated/prisma/enums';
-import { Injectable } from '@nestjs/common';
+import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type OpenAI from 'openai';
 
@@ -25,6 +28,7 @@ export class AiService {
       return 'PAWND AI MOCK READY';
     }
 
+    assertFreeAiModel(requestedModel);
     const client = this.openRouterProvider.getClient();
 
     try {
@@ -37,7 +41,8 @@ export class AiService {
           },
         ],
         max_tokens: 50,
-      })) as OpenRouterChatCompletion;
+        provider: FREE_AI_PROVIDER,
+      } as OpenAI.Chat.Completions.ChatCompletionCreateParams)) as OpenRouterChatCompletion;
 
       await this.createAiSuccessLog(
         ai_feature.ANALYZE_IMAGE,
@@ -75,7 +80,9 @@ export class AiService {
       );
 
       if (!this.isRateLimitError(error)) {
-        throw error;
+        throw new ServiceUnavailableException(
+          'AI วิเคราะห์ภาพยังไม่พร้อมใช้งาน กรุณาลองใหม่ภายหลัง',
+        );
       }
 
       const fallbackModel = this.configService.getOrThrow<string>(
@@ -95,7 +102,9 @@ export class AiService {
           fallbackError,
         );
 
-        throw fallbackError;
+        throw new ServiceUnavailableException(
+          'โควตา AI ฟรีอาจเต็มชั่วคราว กรุณาลองใหม่ภายหลัง',
+        );
       }
     }
   }
@@ -104,10 +113,12 @@ export class AiService {
     model: string,
     imageUrl: string,
   ): Promise<AiAnalysisResult> {
+    assertFreeAiModel(model);
     const client = this.openRouterProvider.getClient();
 
     const response = (await client.chat.completions.create({
       model,
+      provider: { ...FREE_AI_PROVIDER, require_parameters: true },
 
       messages: [
         {
@@ -172,7 +183,7 @@ Field requirements:
             properties: {
               type: {
                 type: 'string',
-                enum: ['DOG', 'CAT'],
+                enum: Object.values(PetType),
               },
 
               breed: {
@@ -205,7 +216,7 @@ Field requirements:
         },
       },
 
-      max_tokens: 500,
+      max_tokens: 1200,
 
       // model can be a reasoning model (e.g. nemotron ...
       // :free). Without this, the model may spend its whole budget
@@ -234,8 +245,6 @@ Field requirements:
 
     const result = this.parseAnalysisResult(content);
 
-    console.log('[AiService.analyzeImage] result:', result);
-
     return result;
   }
   // บาง reasoning model ไม่ยอมทำตาม response_format จริง ๆ
@@ -243,13 +252,13 @@ Field requirements:
   // แทรกก่อน/หลัง JSON มาด้วย จึงต้อง extract JSON object ออกมาก่อน parse
   private parseAnalysisResult(content: string): AiAnalysisResult {
     try {
-      return JSON.parse(content) as AiAnalysisResult;
+      return this.validateAnalysis(JSON.parse(content));
     } catch {
       const match = content.match(/\{[\s\S]*\}/);
 
       if (match) {
         try {
-          return JSON.parse(match[0]) as AiAnalysisResult;
+          return this.validateAnalysis(JSON.parse(match[0]));
         } catch {
           // fall through to the error below
         }
@@ -259,6 +268,19 @@ Field requirements:
         `AI returned a non-JSON response: ${content.slice(0, 200)}`,
       );
     }
+  }
+
+  /** ตรวจคำตอบจากโมเดลจริงก่อนส่งไปกรอกฟอร์ม ป้องกันชนิดข้อมูลและ enum ผิด */
+  private validateAnalysis(value: unknown): AiAnalysisResult {
+    return z
+      .object({
+        type: z.enum(PetType),
+        breed: z.string().nullable(),
+        color: z.string().nullable(),
+        distinctiveFeatures: z.string().nullable(),
+        description: z.string().nullable(),
+      })
+      .parse(value);
   }
 
   //ส่วนย่อย ai log

@@ -1,6 +1,6 @@
 /// <reference types="jest" />
 
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 
 import { AiMatchingService } from './ai-matching.service';
 import type { AiService } from './ai.service';
@@ -39,6 +39,7 @@ describe('AiMatchingService', () => {
   const prismaMock = {
     petPost: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       findMany: jest.fn(),
     },
     aiMatch: {
@@ -60,6 +61,7 @@ describe('AiMatchingService', () => {
   };
   const embeddingMock = {
     calculatePostSimilarity: jest.fn(),
+    createImageEmbedding: jest.fn(),
   };
   const postEventsMock = {
     recordEvent: jest.fn(),
@@ -83,6 +85,7 @@ describe('AiMatchingService', () => {
     };
 
     prismaMock.petPost.findUnique.mockResolvedValue(sourcePost);
+    prismaMock.petPost.findFirst.mockResolvedValue(sourcePost);
     prismaMock.petPost.findMany.mockResolvedValue([candidatePost]);
     embeddingMock.calculatePostSimilarity.mockResolvedValue(1);
     transactionClient.aiMatch.upsert.mockResolvedValue(persistedMatch);
@@ -103,8 +106,19 @@ describe('AiMatchingService', () => {
   });
 
   describe('matchPost', () => {
+    // กดจับคู่ใหม่ต้องซ่อม embedding ของประกาศที่เคยล้มเหลวก่อนคำนวณคะแนน
+    it('retries missing source embeddings before matching', async () => {
+      prismaMock.petPost.findFirst.mockResolvedValueOnce({
+        ...createPost(postId, ownerId, PostType.LOST),
+        images: [{ id: 'image-1' }],
+      });
+      await service.matchPost(ownerId, postId);
+      expect(embeddingMock.createImageEmbedding).toHaveBeenCalledWith(
+        'image-1',
+      );
+    });
     it('persists matches and the first AI_MATCHES_FOUND event in one transaction', async () => {
-      const result = await service.matchPost(postId);
+      const result = await service.matchPost(ownerId, postId);
 
       expect(result.totalMatches).toBe(1);
       expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
@@ -129,7 +143,7 @@ describe('AiMatchingService', () => {
     it('does not create a timeline event when no candidate produces a result', async () => {
       prismaMock.petPost.findMany.mockResolvedValue([]);
 
-      const result = await service.matchPost(postId);
+      const result = await service.matchPost(ownerId, postId);
 
       expect(result.totalMatches).toBe(0);
       expect(prismaMock.$transaction).not.toHaveBeenCalled();
@@ -141,8 +155,8 @@ describe('AiMatchingService', () => {
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce({ id: 'event-id' });
 
-      await service.matchPost(postId);
-      await service.matchPost(postId);
+      await service.matchPost(ownerId, postId);
+      await service.matchPost(ownerId, postId);
 
       expect(prismaMock.$transaction).toHaveBeenCalledTimes(2);
       expect(transactionClient.aiMatch.upsert).toHaveBeenCalledTimes(2);
@@ -153,7 +167,9 @@ describe('AiMatchingService', () => {
       const databaseError = new Error('event persistence failed');
       postEventsMock.recordEvent.mockRejectedValue(databaseError);
 
-      await expect(service.matchPost(postId)).rejects.toBe(databaseError);
+      await expect(service.matchPost(ownerId, postId)).rejects.toBe(
+        databaseError,
+      );
       expect(transactionClient.aiMatch.upsert).toHaveBeenCalledTimes(1);
       expect(postEventsMock.recordEvent).toHaveBeenCalledTimes(1);
     });
@@ -179,7 +195,7 @@ describe('AiMatchingService', () => {
 
     it('allows the post owner to pin a match using the existing action upsert', async () => {
       await expect(
-        service.togglePinMatch(postId, matchId, ownerId),
+        service.togglePinMatch(ownerId, postId, matchId),
       ).resolves.toEqual({
         matchId,
         postId,
@@ -209,9 +225,10 @@ describe('AiMatchingService', () => {
     });
 
     it('rejects a non-owner before changing the match action', async () => {
+      prismaMock.petPost.findFirst.mockResolvedValueOnce(null);
       await expect(
-        service.togglePinMatch(postId, matchId, otherUserId),
-      ).rejects.toBeInstanceOf(ForbiddenException);
+        service.togglePinMatch(otherUserId, postId, matchId),
+      ).rejects.toBeInstanceOf(NotFoundException);
 
       expect(prismaMock.aiMatch.findUnique).not.toHaveBeenCalled();
       expect(prismaMock.aiMatchUserAction.upsert).not.toHaveBeenCalled();
@@ -225,7 +242,7 @@ describe('AiMatchingService', () => {
       });
 
       await expect(
-        service.togglePinMatch(postId, matchId, ownerId),
+        service.togglePinMatch(ownerId, postId, matchId),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(prismaMock.aiMatchUserAction.upsert).not.toHaveBeenCalled();
     });

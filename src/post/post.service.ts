@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 
@@ -22,6 +23,7 @@ import { PostEventsService } from '@/post-events/post-events.service';
 
 @Injectable()
 export class PostService {
+  private readonly logger = new Logger(PostService.name);
   private getCloudinaryResourceType(
     value: string | null | undefined,
   ): CloudinaryResourceType {
@@ -478,20 +480,28 @@ export class PostService {
       ),
     );
 
-    // Create embeddings for the uploaded images.
-    await Promise.all(
-      createdImages.map((image) =>
-        this.embeddingService.createImageEmbedding(image.id),
-      ),
-    );
-
-    // Match this post with opposite LOST/FOUND posts.
-    const matching = await this.aiMatchingService.matchPost(userId, postId);
+    // รูปบันทึกแล้ว AI ขัดข้องต้องไม่ทำให้ผู้ใช้ส่งรูปซ้ำ และต้องแจ้งว่ายังไม่ได้จับคู่
+    let matching: Awaited<ReturnType<AiMatchingService['matchPost']>> | null =
+      null;
+    let aiWarning: string | undefined;
+    try {
+      await Promise.all(
+        createdImages.map((image) =>
+          this.embeddingService.createImageEmbedding(image.id),
+        ),
+      );
+      matching = await this.aiMatchingService.matchPost(userId, postId);
+    } catch {
+      aiWarning =
+        'บันทึกรูปภาพแล้ว แต่ AI ยังจับคู่ไม่สำเร็จ กรุณาสั่งจับคู่ใหม่ภายหลัง';
+      this.logger.warn('Post images saved; AI matching requires retry');
+    }
 
     return {
       post: await this.getOwnedPost(postId, userId),
       images: createdImages,
       matching,
+      ...(aiWarning ? { aiWarning } : {}),
     };
   }
 
